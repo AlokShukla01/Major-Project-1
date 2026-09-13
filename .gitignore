@@ -1,0 +1,26 @@
+# Environments
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Datasets
+Sun/
+LD Polyp/
+*.avi
+*.mp4
+*.zip
+
+# Mac OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Jupyter Notebook
+.ipynb_checkpoints
