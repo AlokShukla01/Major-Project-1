@@ -1,5 +1,30 @@
 # Project Ideas for Major Project 1
 
+## Currently Implemented Features
+1. **Model and Dataset Comparison**:
+   - The project compares multiple models across multiple datasets.
+   - Key metrics tracked include:
+     - Best Training Loss
+     - Best Validation Accuracy
+     - Best Dice Score
+     - Best IoU
+     - Final metrics (Loss, Accuracy, Dice, IoU)
+
+2. **Summary Table Generation**:
+   - A summary table is created for all model-dataset pairs, displaying the best and final metrics.
+   - The table is printed in a clean tabular format in the console.
+
+3. **CSV Export**:
+   - The summary table is saved as a CSV file (`model_comparison_results.csv`) for further analysis.
+
+4. **Dataset Statistics**:
+   - The total number of samples in the `SUN` and `LDPolypVideo` datasets is displayed.
+   - The number of samples used per run is also printed.
+
+---
+
+## Project Ideas for Major Project 1
+
 1. Interactive Model Evaluation and Comparison Dashboard
    - Build a web-based dashboard using Streamlit or Dash.
    - Allow users to upload datasets, train models, and compare results interactively.
