@@ -49,3 +49,9 @@
     - Implement curriculum learning to train models by gradually increasing data complexity.
     - Start with easy samples and progressively introduce harder ones.
     - Compare model performance with and without curriculum learning.
+
+11. RAG Chatbot for Dataset and Model Insights
+    - Build a chatbot that uses Retrieval-Augmented Generation (RAG) to answer questions.
+    - Allow users to query dataset statistics, model performance, and explainable predictions.
+    - Use FAISS or Haystack for retrieval and Hugging Face Transformers for generation.
+    - Integrate the chatbot into the dashboard or deploy it as a standalone app.
