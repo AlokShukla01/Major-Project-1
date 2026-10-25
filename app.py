@@ -1,4 +1,6 @@
-import numpy as np
+import importlib
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -194,29 +196,26 @@ def style_fig(fig, height=460):
     return fig
 
 
-def run_segmentation(image, model_name, threshold):
-    """DEMO PLACEHOLDER - replace this with your trained model's inference.
-
-    Currently it uses a simple brightness threshold on the red channel so the
-    UI flow (upload -> mask -> overlay) can be demonstrated. It is NOT the
-    output of any trained network.
-    """
-    arr = np.asarray(image.convert("RGB")).astype(np.float32) / 255.0
-    score = arr[..., 0] - 0.5 * arr[..., 1]
-    score = (score - score.min()) / (score.max() - score.min() + 1e-8)
-    return (score >= threshold).astype(np.uint8)
-
-
 # ============================================================
 # LOAD DATA
 # ============================================================
 
+APP_DIR = Path(__file__).resolve().parent
+RESULTS_PATH = APP_DIR / "model_comparison_results.csv"
+PIPELINE_PATH = APP_DIR / "outputs" / "pipeline_results.csv"
+
+
 @st.cache_data
-def load_results():
-    return pd.read_csv("model_comparison_results.csv")
+def load_results(include_pipeline: bool, pipeline_mtime: float):
+    base = pd.read_csv(RESULTS_PATH)
+    if include_pipeline and PIPELINE_PATH.exists():
+        runs = pd.read_csv(PIPELINE_PATH).drop_duplicates(["model", "dataset"], keep="last")
+        base = pd.concat([base, runs], ignore_index=True)
+    return base
 
 
-df = load_results()
+include_pipeline = st.session_state.get("include_pipeline", False)
+df = load_results(include_pipeline, PIPELINE_PATH.stat().st_mtime if PIPELINE_PATH.exists() else 0.0)
 all_models = sorted(df["model"].unique().tolist())
 all_datasets = sorted(df["dataset"].unique().tolist())
 
@@ -235,9 +234,30 @@ PAGES = [
     "Rankings",
     "Experiment Results",
     "Live Demo",
+    "Explainable AI",
+    "Video Analysis",
+    "Train Model",
+    "Synthetic Data",
+    "Annotation Tool",
+    "Leaderboard",
+    "Knowledge Graph",
+    "AI Assistant",
     "Presentation Mode",
     "About Project",
 ]
+
+# Pages implemented in the dashboard/ package: page name -> module
+EXTENDED_PAGES = {
+    "Live Demo": "dashboard.live_demo",
+    "Explainable AI": "dashboard.explainability",
+    "Video Analysis": "dashboard.video_page",
+    "Train Model": "dashboard.training",
+    "Synthetic Data": "dashboard.synthetic_page",
+    "Annotation Tool": "dashboard.annotation_page",
+    "Leaderboard": "dashboard.leaderboard_page",
+    "Knowledge Graph": "dashboard.knowledge_graph_page",
+    "AI Assistant": "dashboard.assistant",
+}
 
 with st.sidebar:
     st.title("🔬 PolypSeg AI")
@@ -251,6 +271,9 @@ with st.sidebar:
 
     selected_datasets = st.multiselect("Datasets", all_datasets, default=all_datasets)
     selected_models = st.multiselect("Models", all_models, default=all_models)
+
+    st.toggle("Include pipeline runs", key="include_pipeline",
+              help="Add results from the Train Model page (outputs/pipeline_results.csv) to every chart.")
 
     st.divider()
     st.caption(f"Experiments: {len(df)}")
@@ -720,43 +743,23 @@ elif page == "Experiment Results":
 
 
 # ============================================================
-# LIVE DEMO
+# EXTENDED PAGES (Live Demo, XAI, Video, Training, Synthetic, Annotation,
+# Leaderboard, Knowledge Graph, AI Assistant) - see dashboard/
 # ============================================================
 
-elif page == "Live Demo":
+elif page in EXTENDED_PAGES:
 
-    from PIL import Image
-
-    st.subheader("Live Segmentation Demo")
-    st.warning(
-        "Demo mode: the mask below comes from a simple colour threshold, not from your trained network. "
-        "Connect your model inside `run_segmentation()` in app.py to show real predictions."
-    )
-
-    d1, d2 = st.columns([1, 2])
-    with d1:
-        demo_model = st.selectbox("Model", all_models)
-        threshold = st.slider("Mask threshold", 0.0, 1.0, 0.6, 0.01)
-        alpha = st.slider("Overlay opacity", 0.0, 1.0, 0.45, 0.05)
-        upload = st.file_uploader("Upload a colonoscopy image", type=["png", "jpg", "jpeg"])
-
-    with d2:
-        if upload is None:
-            st.info("Upload an image to see original, mask and overlay side by side.")
-        else:
-            img = Image.open(upload).convert("RGB")
-            mask = run_segmentation(img, demo_model, threshold)
-            base = np.asarray(img).astype(np.float32)
-            tint = np.zeros_like(base)
-            tint[..., 1] = 255
-            m3 = mask[..., None].astype(np.float32)
-            overlay = base * (1 - alpha * m3) + tint * (alpha * m3)
-
-            o1, o2, o3 = st.columns(3)
-            o1.image(img, caption="Original", width="stretch")
-            o2.image(mask * 255, caption="Predicted mask", width="stretch", clamp=True)
-            o3.image(overlay.astype(np.uint8), caption="Overlay", width="stretch")
-            st.caption(f"Mask covers {mask.mean() * 100:.1f}% of the image | model selected: {demo_model}")
+    importlib.import_module(EXTENDED_PAGES[page]).render({
+        "df": df,
+        "filtered_df": filtered_df,
+        "model_colors": model_colors,
+        "style_fig": style_fig,
+        "kpi": kpi,
+        "insight": insight,
+        "accents": ACCENTS,
+        "palette": PALETTE,
+        "include_pipeline": include_pipeline,
+    })
 
 
 # ============================================================
@@ -783,7 +786,9 @@ elif page == "Presentation Mode":
         ("4. Model Ranking (avg Dice)", None),
         ("5. Conclusion & Future Work",
          "<ul><li>Pick the model with the best Dice / IoU balance for deployment.</li>"
-         "<li>Next: image upload, real-time segmentation, Grad-CAM explainability, video analysis.</li></ul>"),
+         "<li>Built: live segmentation, Grad-CAM explainability, video detection, training pipeline, "
+         "curriculum learning, synthetic data, annotation tool, leaderboard, knowledge graph, RAG assistant.</li>"
+         "<li>Next: retrain all models on the real datasets with the pipeline and add severity labels.</li></ul>"),
     ]
 
     n = len(slides)
@@ -845,10 +850,14 @@ elif page == "About Project":
     with st.expander("Datasets"):
         st.markdown("- SUN Database\n- LDPolypVideo")
 
-    with st.expander("Future development"):
+    with st.expander("Platform modules"):
         st.markdown(
-            "The dashboard is designed to eventually connect with the trained segmentation models:\n\n"
-            "**Image Upload -> Segmentation -> Visualization -> XAI / Grad-CAM -> Video Analysis**"
+            "**Image Upload -> Segmentation -> Visualization -> XAI / Grad-CAM -> Video Analysis**\n\n"
+            "- `polypseg/` Python package: models, data loaders, training pipeline (TensorBoard), curriculum "
+            "learning, synthetic data + DCGAN, inference, Grad-CAM, video, annotation, leaderboard, "
+            "knowledge graph, RAG.\n"
+            "- `dashboard/` Streamlit pages for each module.\n"
+            "- Research prototype only. Not a medical device."
         )
 
 

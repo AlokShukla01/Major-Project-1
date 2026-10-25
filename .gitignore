@@ -24,3 +24,13 @@ __pycache__/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+# Secrets
+.env
+
+# Generated artifacts (recreate with the commands in README.md)
+checkpoints/
+runs/
+outputs/
+data/
+leaderboard.csv
