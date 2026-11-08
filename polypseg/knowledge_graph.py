@@ -15,6 +15,8 @@ MODEL_COMPONENTS = {
     "Attention U-Net": ["Encoder-decoder", "Skip connections", "Attention gates"],
     "U-Net++": ["Encoder-decoder", "Nested dense skip connections"],
     "DeepLabV3+": ["Encoder-decoder", "Atrous convolution", "ASPP"],
+    "Hybrid Polyp U-Net": ["Residual convolution", "ASPP", "Attention gates", "Encoder-decoder"],
+    "Pretrained ResNet18 U-Net": ["ImageNet pretraining", "ResNet-18 encoder", "U-Net decoder"],
 }
 DATASET_FACTS = {
     "SUN Database": {"annotation": "Bounding boxes", "modality": "Colonoscopy video frames"},

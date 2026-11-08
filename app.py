@@ -836,7 +836,9 @@ elif page == "About Project":
             "- Basic U-Net\n"
             "- Attention U-Net\n"
             "- U-Net++\n"
-            "- DeepLabV3+"
+            "- DeepLabV3+\n"
+            "- Hybrid Polyp U-Net (residual + ASPP + attention)"
+            "\n- Pretrained ResNet18 U-Net (ImageNet encoder + U-Net decoder)"
         )
 
     with st.expander("Evaluation metrics", expanded=True):

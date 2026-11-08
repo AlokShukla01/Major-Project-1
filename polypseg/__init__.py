@@ -3,7 +3,7 @@
 Modules
 -------
 config         Shared defaults and project paths.
-models         Basic U-Net, Attention U-Net, U-Net++, DeepLabV3+.
+models         Basic U-Net, Attention U-Net, U-Net++, DeepLabV3+, Hybrid Polyp U-Net.
 metrics        Accuracy / Dice / IoU.
 data           SUN and LDPolypVideo loaders plus a generic image-folder loader.
 synthetic      Procedural synthetic polyp generator (no real data needed).

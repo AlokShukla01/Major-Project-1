@@ -26,7 +26,11 @@ def render(ctx):
             if model is None:
                 return
             layers = candidate_layers(model)
-            default = GRADCAM_LAYERS.get(meta["model_name"], layers[-2])
+            default = GRADCAM_LAYERS.get(meta["model_name"])
+            if default is None:
+                default = layers[-2] if len(layers) > 1 else layers[-1]
+            if default not in layers:
+                layers = [default, *layers]
             layer = st.selectbox("Target layer", layers, index=layers.index(default),
                                  help="Deeper layers give coarser, more semantic maps.")
             threshold = st.slider("Prediction threshold", 0.05, 0.95, 0.5, 0.05, key="xai_thr")

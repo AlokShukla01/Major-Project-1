@@ -22,6 +22,7 @@ row (same columns as model_comparison_results.csv) to the results CSV.
 """
 
 import argparse
+import copy
 import csv
 import datetime as dt
 import random
@@ -63,6 +64,7 @@ class TrainConfig:
     curriculum: bool = False
     curriculum_start: float = 0.3
     mix_synthetic: int = 0
+    augment: bool = False
     device: str = field(default_factory=lambda: str(C.get_device()))
 
 
@@ -86,17 +88,46 @@ def _make_writer(log_dir):
 
 
 def split_dataset(dataset, cfg: TrainConfig):
-    """Subset + reproducible train/val split, same logic as the notebook."""
+    """Reproducible subset and split, keeping video sequences/cases together when possible."""
     sample_count = min(cfg.subset, len(dataset))
     if sample_count < 2:
         raise ValueError(f"Need at least 2 samples, found {sample_count}.")
-    sub = Subset(dataset, list(range(sample_count)))
-    train_n = max(1, int((1 - cfg.val_fraction) * len(sub)))
-    val_n = len(sub) - train_n
-    if val_n == 0:
-        train_n, val_n = train_n - 1, 1
+    # Select across the whole dataset before splitting. Taking the first N frames
+    # clustered the LDPolyp sample in its first sorted sequences and biased runs.
+    selection_gen = torch.Generator().manual_seed(cfg.seed)
+    selected = torch.randperm(len(dataset), generator=selection_gen)[:sample_count].tolist()
+    sub = Subset(dataset, selected)
     gen = torch.Generator().manual_seed(cfg.seed)
-    train_ds, val_ds = torch.utils.data.random_split(sub, [train_n, val_n], generator=gen)
+    val_n = max(1, int(cfg.val_fraction * len(sub)))
+
+    # Frames from one LDPolyp sequence (or SUN case) are highly correlated. Keep
+    # groups on one side of validation to avoid near-duplicate frame leakage.
+    grouped = hasattr(dataset, "samples") and len(dataset.samples) == len(dataset)
+    if grouped:
+        group_indices = {}
+        for local_idx, source_idx in enumerate(selected):
+            path = dataset.samples[source_idx][0]
+            group_indices.setdefault(Path(path).parent.name, []).append(local_idx)
+        groups = list(group_indices)
+        if len(groups) > 1:
+            order = torch.randperm(len(groups), generator=gen).tolist()
+            val_groups, count = [], 0
+            for group_idx in order:
+                if count >= val_n or len(val_groups) >= len(groups) - 1:
+                    break
+                group = groups[group_idx]
+                val_groups.append(group)
+                count += len(group_indices[group])
+            val_set = set(val_groups)
+            train_local = [i for g, idxs in group_indices.items() if g not in val_set for i in idxs]
+            val_local = [i for g, idxs in group_indices.items() if g in val_set for i in idxs]
+            train_ds, val_ds = Subset(sub, train_local), Subset(sub, val_local)
+        else:
+            train_n = len(sub) - val_n
+            train_ds, val_ds = torch.utils.data.random_split(sub, [train_n, val_n], generator=gen)
+    else:
+        train_n = len(sub) - val_n
+        train_ds, val_ds = torch.utils.data.random_split(sub, [train_n, val_n], generator=gen)
     return train_ds, val_ds, sample_count
 
 
@@ -107,21 +138,52 @@ def _raw_indices(train_ds):
     return [inner[i] for i in outer], train_ds.dataset.dataset
 
 
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, threshold=0.5):
     model.eval()
     acc = dice = iou = 0.0
     with torch.no_grad():
         for imgs, masks in loader:
             imgs, masks = imgs.to(device), masks.to(device)
-            a, d, i = calculate_metrics(model(imgs), masks)
+            a, d, i = calculate_metrics(model(imgs), masks, threshold)
             acc, dice, iou = acc + a, dice + d, iou + i
     n = max(1, len(loader))
     return acc / n, dice / n, iou / n
 
 
+def segmentation_loss(logits, masks):
+    """Class-balanced BCE plus soft Dice for sparse polyp regions.
+
+    A plain BCE objective can minimize loss by predicting background everywhere
+    when target boxes cover few pixels. Batchwise positive weighting and Dice
+    overlap keep foreground pixels represented in the learning signal.
+    """
+    positive = masks.sum()
+    negative = masks.numel() - positive
+    pos_weight = (negative / positive.clamp_min(1)).clamp(min=1.0, max=20.0)
+    bce = nn.functional.binary_cross_entropy_with_logits(logits, masks, pos_weight=pos_weight)
+    probs = torch.sigmoid(logits)
+    dims = tuple(range(1, masks.ndim))
+    intersection = (probs * masks).sum(dim=dims)
+    denominator = probs.sum(dim=dims) + masks.sum(dim=dims)
+    dice_loss = 1 - ((2 * intersection + 1e-6) / (denominator + 1e-6)).mean()
+    return bce + dice_loss
+
+
+def augment_batch(images, masks):
+    """Apply paired flips and mild color variation to colonoscopy training batches."""
+    if random.random() < 0.5:
+        images, masks = images.flip(-1), masks.flip(-1)
+    if random.random() < 0.25:
+        images, masks = images.flip(-2), masks.flip(-2)
+    contrast = random.uniform(0.9, 1.1)
+    brightness = random.uniform(0.9, 1.1)
+    images = (((images - 0.5) * contrast + 0.5) * brightness).clamp_(0, 1)
+    return images, masks
+
+
 def run_experiment(dataset, dataset_name, model_name, cfg: TrainConfig = None,
                    progress_callback=None, save_checkpoint=True, results_csv=PIPELINE_RESULTS_CSV,
-                   run_tag=None):
+                   run_tag=None, initial_checkpoint=None):
     """Train one model on one dataset and return a result dict.
 
     progress_callback(epoch, total_epochs, metrics_dict) is called after every epoch
@@ -148,14 +210,36 @@ def run_experiment(dataset, dataset_name, model_name, cfg: TrainConfig = None,
 
     torch.manual_seed(cfg.seed)
     model = build_model(model_name, base=cfg.base).to(device)
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=cfg.lr)
+    validation_threshold = 0.5
+    if initial_checkpoint:
+        initial = torch.load(initial_checkpoint, map_location="cpu", weights_only=True)
+        if "state_dict" not in initial:
+            raise ValueError(f"Initial checkpoint has no state_dict: {initial_checkpoint}")
+        model.load_state_dict(initial["state_dict"])
+        validation_threshold = float(initial.get("video_threshold", initial.get("threshold", 0.5)))
+        print(f"Initialized {model_name} from {initial_checkpoint}")
+    if model_name == "Pretrained ResNet18 U-Net":
+        if not model.pretrained_encoder:
+            print("WARNING: ImageNet ResNet-18 weights are not cached; training encoder from scratch.")
+            optimizer = optim.Adam(model.parameters(), lr=cfg.lr)
+        else:
+            optimizer = optim.Adam([
+                {"params": model.encoder.parameters(), "lr": cfg.lr * 0.1},
+                {"params": list(model.decoder3.parameters()) + list(model.decoder2.parameters()) +
+                           list(model.decoder1.parameters()) + list(model.decoder0.parameters()) +
+                           list(model.head.parameters()), "lr": cfg.lr},
+            ])
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=cfg.lr)
 
     variant = run_tag or ("curriculum" if cfg.curriculum else (f"synth{cfg.mix_synthetic}" if cfg.mix_synthetic else "baseline"))
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     writer = _make_writer(C.RUNS_DIR / f"{slug(model_name)}__{slug(dataset_name)}__{variant}__{stamp}")
 
     history = {"loss": [], "acc": [], "dice": [], "iou": [], "train_samples": [], "seconds": []}
+    best_state = None
+    best_epoch = 0
+    best_validation = None
     for epoch in range(cfg.epochs):
         t0 = time.time()
         if scores is not None:
@@ -167,16 +251,25 @@ def run_experiment(dataset, dataset_name, model_name, cfg: TrainConfig = None,
 
         model.train()
         total_loss = 0.0
-        for imgs, masks in train_loader:
+        for batch_index, (imgs, masks) in enumerate(train_loader, start=1):
+            if cfg.augment:
+                imgs, masks = augment_batch(imgs, masks)
             imgs, masks = imgs.to(device), masks.to(device)
             optimizer.zero_grad()
-            loss = criterion(model(imgs), masks)
+            loss = segmentation_loss(model(imgs), masks)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
+            if model_name == "Polyp-PVT" and batch_index % 100 == 0:
+                print(f"    epoch {epoch + 1}: batch {batch_index}/{len(train_loader)} "
+                      f"loss {loss.item():.4f}", flush=True)
 
         avg_loss = total_loss / max(1, len(train_loader))
-        acc, dice, iou = evaluate(model, val_loader, device)
+        acc, dice, iou = evaluate(model, val_loader, device, threshold=validation_threshold)
+        if best_validation is None or dice > best_validation["dice"]:
+            best_epoch = epoch + 1
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_validation = {"loss": avg_loss, "acc": acc, "dice": dice, "iou": iou}
         secs = time.time() - t0
         for k, v in zip(["loss", "acc", "dice", "iou", "train_samples", "seconds"],
                         [avg_loss, acc, dice, iou, len(epoch_ds), secs]):
@@ -204,6 +297,8 @@ def run_experiment(dataset, dataset_name, model_name, cfg: TrainConfig = None,
         )
         writer.close()
 
+    model.load_state_dict(best_state)
+
     row = {
         "model": model_name if variant == "baseline" else f"{model_name} ({variant})",
         "dataset": dataset_name,
@@ -211,10 +306,10 @@ def run_experiment(dataset, dataset_name, model_name, cfg: TrainConfig = None,
         "best_val_accuracy": max(history["acc"]),
         "best_dice": max(history["dice"]),
         "best_iou": max(history["iou"]),
-        "final_train_loss": history["loss"][-1],
-        "final_accuracy": history["acc"][-1],
-        "final_dice": history["dice"][-1],
-        "final_iou": history["iou"][-1],
+        "final_train_loss": best_validation["loss"],
+        "final_accuracy": best_validation["acc"],
+        "final_dice": best_validation["dice"],
+        "final_iou": best_validation["iou"],
         "samples_used": sample_count,
     }
 
@@ -231,7 +326,12 @@ def run_experiment(dataset, dataset_name, model_name, cfg: TrainConfig = None,
             "variant": variant,
             "history": history,
             "metrics": row,
+            "selected_epoch": best_epoch,
             "config": {k: (list(v) if isinstance(v, tuple) else v) for k, v in asdict(cfg).items()},
+            "loss": "class_balanced_bce_plus_soft_dice",
+            "pretrained_encoder": getattr(model, "pretrained_encoder", False),
+            "initial_checkpoint": str(initial_checkpoint) if initial_checkpoint else None,
+            "video_threshold": validation_threshold,
             "parameters": count_parameters(model),
             "created": dt.datetime.now().isoformat(timespec="seconds"),
         }, ckpt_path)
@@ -275,10 +375,15 @@ def main(argv=None):
     p.add_argument("--lr", type=float, default=C.LEARNING_RATE)
     p.add_argument("--subset", type=int, default=C.SUBSET)
     p.add_argument("--base", type=int, default=C.BASE_CHANNELS, help="base channel width")
+    p.add_argument("--image-size", type=int, choices=[128, 256, 384], default=C.IMAGE_SIZE[0],
+                   help="square input resolution")
+    p.add_argument("--augment", action="store_true", help="paired flips and mild color augmentation")
     p.add_argument("--curriculum", action="store_true", help="train with curriculum learning")
     p.add_argument("--compare-curriculum", action="store_true",
                    help="run baseline AND curriculum for each model")
     p.add_argument("--mix-synthetic", type=int, default=0, help="extra synthetic training images")
+    p.add_argument("--run-tag", help="optional checkpoint/result variant name")
+    p.add_argument("--init-checkpoint", help="initialize model weights from a compatible checkpoint")
     p.add_argument("--synthetic-n", type=int, default=300, help="size of --data synthetic")
     p.add_argument("--results-csv", default=str(PIPELINE_RESULTS_CSV))
     p.add_argument("--device", default=str(C.get_device()))
@@ -286,6 +391,7 @@ def main(argv=None):
 
     cfg = TrainConfig(epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, subset=args.subset,
                       base=args.base, curriculum=args.curriculum, mix_synthetic=args.mix_synthetic,
+                      image_size=(args.image_size, args.image_size), augment=args.augment,
                       device=args.device)
     dataset, ds_name = parse_data_arg(args.data, cfg, args.synthetic_n)
     names = list(MODEL_FACTORIES) if args.models == "all" else [m.strip() for m in args.models.split(",")]
@@ -297,7 +403,8 @@ def main(argv=None):
                 cfg.curriculum = use_cur
                 run_experiment(dataset, ds_name, name, cfg, results_csv=args.results_csv)
         else:
-            run_experiment(dataset, ds_name, name, cfg, results_csv=args.results_csv)
+            run_experiment(dataset, ds_name, name, cfg, results_csv=args.results_csv,
+                           run_tag=args.run_tag, initial_checkpoint=args.init_checkpoint)
     print(f"Results appended to {args.results_csv}")
 
 

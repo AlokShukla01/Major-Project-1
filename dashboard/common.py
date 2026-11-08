@@ -30,7 +30,7 @@ def get_checkpoints():
     return list_checkpoints()
 
 
-def checkpoint_picker(key: str, allow_heuristic=True, label="Model checkpoint"):
+def checkpoint_picker(key: str, allow_heuristic=True, label="Model checkpoint", preferred_variant=None):
     """Select box over saved checkpoints. Returns (model, meta) or (None, None) for the heuristic."""
     cks = get_checkpoints()
     options = [c["label"] for c in cks] + ([HEURISTIC] if allow_heuristic else [])
@@ -38,7 +38,13 @@ def checkpoint_picker(key: str, allow_heuristic=True, label="Model checkpoint"):
         st.info("No trained checkpoints yet. Train one on the **Train Model** page "
                 "(synthetic data works without any dataset).")
         return None, None
-    choice = st.selectbox(label, options, key=key)
+    default_index = 0
+    if preferred_variant is not None:
+        preferred = next((i for i, ck in enumerate(cks)
+                          if ck.get("variant") == preferred_variant), None)
+        if preferred is not None:
+            default_index = preferred
+    choice = st.selectbox(label, options, index=default_index, key=key)
     if choice == HEURISTIC:
         return None, None
     ck = cks[options.index(choice)]

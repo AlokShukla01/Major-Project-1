@@ -6,6 +6,7 @@ Both turn bounding boxes into rectangular pseudo-masks.
 ArrayDataset wraps in-memory numpy arrays (used for synthetic data).
 """
 
+import argparse
 from pathlib import Path
 
 import cv2
@@ -14,6 +15,8 @@ import torch
 from torch.utils.data import Dataset
 
 from .config import IMAGE_SIZE
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
 def read_rgb_image(img_path):
@@ -78,6 +81,7 @@ class SUNPolypDataset(BoundingBoxSegmentationDataset):
         anno_dir = root_dir / "annotation_txt"
         if not anno_dir.exists():
             raise FileNotFoundError(f"SUN annotation folder not found: {anno_dir}")
+        sample_by_path = {}
         for txt_file in sorted(anno_dir.glob("*.txt")):
             case_dir = root_dir / txt_file.stem
             if not case_dir.exists():
@@ -90,19 +94,28 @@ class SUNPolypDataset(BoundingBoxSegmentationDataset):
                     coords = parts[1].split(",")
                     if len(coords) < 4:
                         continue
-                    img_path = case_dir / parts[0]
+                    # SUN annotation files occasionally use paths containing a case folder.
+                    # Resolve only the basename under the case directory to avoid path mismatch.
+                    img_path = case_dir / Path(parts[0]).name
                     if img_path.exists():
-                        self.samples.append((img_path, [[int(float(c)) for c in coords[:4]]]))
+                        box = [int(float(c)) for c in coords[:4]]
+                        existing = sample_by_path.get(img_path)
+                        if existing is None:
+                            sample_by_path[img_path] = len(self.samples)
+                            self.samples.append((img_path, [box]))
+                        else:
+                            self.samples[existing][1].append(box)
 
 
 class LDPolypDataset(BoundingBoxSegmentationDataset):
-    """LDPolypVideo.
+    """LDPolypVideo (includes empty/background frames by default).
 
     Layout: <root>/Images/<seq>/*.jpg and <root>/Annotations/<seq>/<frame>.txt
     Annotation file: line 0 = number of polyps, lines 1+ = "xmin ymin xmax ymax".
+    Set skip_empty=True only when a positive-only subset is explicitly required.
     """
 
-    def __init__(self, root_dir, image_size=IMAGE_SIZE, skip_empty=True):
+    def __init__(self, root_dir, image_size=IMAGE_SIZE, skip_empty=False):
         super().__init__(image_size=image_size)
         root_dir = Path(root_dir)
         img_root = root_dir / "Images"
@@ -115,7 +128,8 @@ class LDPolypDataset(BoundingBoxSegmentationDataset):
             anno_dir = anno_root / img_dir.name
             if not anno_dir.exists():
                 continue
-            for img_file in sorted(img_dir.glob("*.jpg")):
+            for img_file in sorted(p for p in img_dir.iterdir()
+                                   if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS):
                 anno_file = anno_dir / f"{img_file.stem}.txt"
                 if not anno_file.exists():
                     continue
@@ -166,3 +180,36 @@ def load_dataset(kind: str, root: str, image_size=IMAGE_SIZE):
     if kind not in DATASET_TYPES:
         raise KeyError(f"Unknown dataset type '{kind}'")
     return DATASET_TYPES[kind](root, image_size=image_size)
+
+
+def dataset_summary(dataset, root=""):
+    """Return counts and resolved root for a loaded on-disk dataset."""
+    return {
+        "samples": len(dataset),
+        "root": str(Path(root).expanduser().resolve()) if root else "",
+        "images_with_boxes": sum(bool(boxes) for _, boxes in dataset.samples),
+        "background_images": sum(not boxes for _, boxes in dataset.samples),
+        "boxes": sum(len(boxes) for _, boxes in dataset.samples),
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Inspect SUN and LDPolyp dataset folders")
+    parser.add_argument("--sun", help="SUN positive split root (contains annotation_txt/ and case folders)")
+    parser.add_argument("--ldpolyp", help="LDPolyp split root (contains Images/ and Annotations/)")
+    args = parser.parse_args(argv)
+    roots = [("SUN Database", "SUN format", args.sun),
+             ("LDPolypVideo", "LDPolypVideo format", args.ldpolyp)]
+    requested = [(name, kind, root) for name, kind, root in roots if root]
+    if not requested:
+        parser.error("Provide at least one of --sun or --ldpolyp")
+    for name, kind, root in requested:
+        ds = load_dataset(kind, root)
+        positives = sum(bool(boxes) for _, boxes in ds.samples)
+        backgrounds = len(ds) - positives
+        print(f"{name}: {len(ds):,} images ({positives:,} with polyps, {backgrounds:,} background) | "
+              f"{sum(len(boxes) for _, boxes in ds.samples):,} boxes | {Path(root).expanduser().resolve()}")
+
+
+if __name__ == "__main__":
+    main()

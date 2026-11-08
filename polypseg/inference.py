@@ -30,6 +30,7 @@ def list_checkpoints(directory=C.CHECKPOINT_DIR):
             "variant": meta.get("variant", "baseline"),
             "metrics": meta.get("metrics", {}),
             "history": meta.get("history", {}),
+            "image_size": tuple(meta.get("image_size", C.IMAGE_SIZE)),
             "created": meta.get("created"),
             "parameters": meta.get("parameters"),
         })
@@ -65,6 +66,18 @@ def predict_prob(model, img_rgb: np.ndarray, image_size=C.IMAGE_SIZE, device=Non
     x = preprocess(img_rgb, image_size).to(device)
     prob = torch.sigmoid(model(x))[0, 0].float().cpu().numpy()
     h, w = img_rgb.shape[:2]
+    return cv2.resize(prob, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+@torch.no_grad()
+def predict_clip_prob(model, clip_rgb, image_size=C.IMAGE_SIZE, device=None) -> np.ndarray:
+    """Predict the centre-frame mask from a list of neighboring RGB video frames."""
+    device = device or next(model.parameters()).device
+    tensors = [preprocess(frame, image_size)[0] for frame in clip_rgb]
+    x = torch.stack(tensors, dim=0).unsqueeze(0).to(device)
+    logits = model(x)
+    prob = torch.sigmoid(logits)[0, 0].float().cpu().numpy()
+    h, w = clip_rgb[len(clip_rgb) // 2].shape[:2]
     return cv2.resize(prob, (w, h), interpolation=cv2.INTER_LINEAR)
 
 

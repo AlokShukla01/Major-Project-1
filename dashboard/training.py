@@ -7,7 +7,7 @@ import plotly.express as px
 import streamlit as st
 
 from polypseg import config as C
-from polypseg.data import ArrayDataset, load_dataset
+from polypseg.data import ArrayDataset, dataset_summary, load_dataset
 from polypseg.inference import list_checkpoints
 from polypseg.models import MODEL_FACTORIES, build_model, count_parameters
 from polypseg.synthetic import generate_arrays
@@ -40,8 +40,11 @@ def render(ctx):
                 n_syn = st.slider("Synthetic images", 50, 2000, 400, 50)
                 ds_path, ds_kind = None, None
             else:
-                ds_kind = st.selectbox("Folder format", ["LDPolypVideo format", "SUN format"])
-                ds_path = st.text_input("Folder path", placeholder="/path/to/LD Polyp/TrainValid")
+                ds_kind = "LDPolypVideo format"
+                default_path = C.PROJECT_ROOT / "LD Polyp" / "TrainValid"
+                ds_path = st.text_input("Dataset folder", value=str(default_path) if default_path.exists() else "",
+                                        placeholder="Choose the LDPolyp split folder containing Images/ and Annotations/")
+                st.caption("Active real-data benchmark: LDPolypVideo TrainValid. The Test split is reserved for final evaluation.")
             subset = st.number_input("Max samples", 10, 100_000, C.SUBSET, 50)
         with c2:
             st.markdown("**Models & mode**")
@@ -55,10 +58,12 @@ def render(ctx):
         with c3:
             st.markdown("**Hyper-parameters**")
             epochs = st.slider("Epochs", 1, 50, 5)
+            image_size = st.select_slider("Input resolution", [128, 256, 384], value=128)
             base = st.select_slider("Base channels", [8, 16, 32, 64], value=32,
                                     help="64 matches the notebook. Smaller trains faster.")
             batch = st.select_slider("Batch size", [2, 4, 8, 16, 32], value=8)
             lr = st.select_slider("Learning rate", [1e-4, 3e-4, 1e-3, 3e-3], value=1e-3)
+            augment = st.checkbox("Apply paired image/mask augmentation", value=False)
             if models:
                 st.caption(" | ".join(f"{m}: {count_parameters(build_model(m, base)):,} params" for m in models))
 
@@ -70,14 +75,21 @@ def render(ctx):
             try:
                 if source.startswith("Synthetic"):
                     imgs, masks = _synthetic(n_syn, C.SEED)
-                    dataset, ds_name = ArrayDataset(imgs, masks), "Synthetic"
+                    dataset, ds_name = ArrayDataset(imgs, masks, (image_size, image_size)), "Synthetic"
                 else:
                     if not ds_path or not Path(ds_path).expanduser().exists():
                         st.error("Folder not found.")
                         st.stop()
-                    dataset = load_dataset(ds_kind, str(Path(ds_path).expanduser()))
+                    dataset = load_dataset(ds_kind, str(Path(ds_path).expanduser()),
+                                           image_size=(image_size, image_size))
                     ds_name = "LDPolypVideo" if ds_kind.startswith("LD") else "SUN Database"
-                    st.success(f"Loaded {len(dataset):,} annotated frames.")
+                    if not len(dataset):
+                        st.error("No annotated images were found. Check the folder layout and annotation filenames.")
+                        st.stop()
+                    summary = dataset_summary(dataset, ds_path)
+                    st.success(f"Loaded {summary['samples']:,} frames: {summary['images_with_boxes']:,} with polyps, "
+                               f"{summary['background_images']:,} background, and {summary['boxes']:,} boxes "
+                               f"from `{summary['root']}`. Masks are rectangular pseudo-masks derived from boxes.")
             except Exception as exc:
                 st.error(f"Could not load data: {exc}")
                 st.stop()
@@ -89,7 +101,8 @@ def render(ctx):
             for i, (m, variant) in enumerate(runs):
                 cfg = TrainConfig(epochs=epochs, batch_size=batch, lr=lr, subset=int(subset), base=base,
                                   curriculum=variant["curriculum"], curriculum_start=cur_start,
-                                  mix_synthetic=n_mix if variant["mix_synthetic"] == -1 else 0)
+                                  mix_synthetic=n_mix if variant["mix_synthetic"] == -1 else 0,
+                                  image_size=(image_size, image_size), augment=augment)
                 live = []
                 tag = "curriculum" if cfg.curriculum else (f"synth{cfg.mix_synthetic}" if cfg.mix_synthetic else "baseline")
 

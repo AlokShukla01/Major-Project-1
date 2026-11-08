@@ -34,7 +34,13 @@ def grad_cam(model, img_rgb: np.ndarray, layer: str = None, model_name: str = No
     Returns (cam float32 HxW in [0,1] at original resolution, prob HxW in [0,1]).
     `region` (optional, HxW binary at original resolution) restricts the explained target.
     """
-    layer = layer or GRADCAM_LAYERS.get(model_name, candidate_layers(model)[-2])
+    if layer is None:
+        layer = GRADCAM_LAYERS.get(model_name)
+    if layer is None:
+        candidates = candidate_layers(model)
+        if not candidates:
+            raise ValueError(f"No Grad-CAM target layers found for {model_name or type(model).__name__}.")
+        layer = candidates[-2] if len(candidates) > 1 else candidates[-1]
     target_module = _get_module(model, layer)
     device = next(model.parameters()).device
 

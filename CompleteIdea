@@ -1,155 +1,73 @@
-# Project Ideas for Major Project 1
+# PolypSeg AI — Project Summary
 
-## Currently Implemented Features
-1. **Model and Dataset Comparison**:
-   - The project compares multiple models across multiple datasets.
-   - Key metrics tracked include:
-     - Best Training Loss
-     - Best Validation Accuracy
-     - Best Dice Score
-     - Best IoU
-     - Final metrics (Loss, Accuracy, Dice, IoU)
+## Goal
+Compare polyp segmentation models and provide a local dashboard where users can inspect results, upload images or colonoscopy videos, and view model predictions.
 
-2. **Summary Table Generation**:
-   - A summary table is created for all model-dataset pairs, displaying the best and final metrics.
-   - The table is printed in a clean tabular format in the console.
+## Implemented features
 
-3. **CSV Export**:
-   - The summary table is saved as a CSV file (`model_comparison_results.csv`) for further analysis.
+### 1. Model training and evaluation
+- Reusable `polypseg` package with Basic U-Net, Attention U-Net, U-Net++, DeepLabV3+, Hybrid Polyp U-Net, pretrained ResNet18 U-Net, and Polyp-PVT.
+- Training pipeline supports SUN-compatible folders, LDPolypVideo, and synthetic data; includes grouped validation, augmentation, curriculum learning, synthetic-data mixing, TensorBoard logs, and checkpoint metadata.
+- Metrics include loss, accuracy, Dice, and IoU. Evaluation can compare checkpoints on the same held-out dataset frames.
+- LDPolypVideo is the active real-video dataset. SUN support and original notebook comparisons remain available for historical/reference use.
 
-4. **Dataset Statistics**:
-   - The total number of samples in the `SUN` and `LDPolypVideo` datasets is displayed.
-   - The number of samples used per run is also printed.
+### 2. Polyp-PVT video model
+- Integrated the Polyp-PVT architecture and official pretrained checkpoint format; fine-tuned on LDPolypVideo TrainValid and calibrated the probability threshold on held-out TrainValid sequences.
+- Video Analysis defaults to the fine-tuned checkpoint; users can select another saved checkpoint.
+- Full LDPolypVideo Test split (15,397 frames): Dice **0.5001**, IoU **0.4110**, threshold 0.90. The official pretrained model without fine-tuning scored Dice 0.3701 / IoU 0.2862 on the same split.
+- Held-out TrainValid validation Dice was **0.7865** on 5,234 frames. This is not the Test score. The requested Test Dice 0.85 target was not reached.
+- Dataset annotations are bounding boxes converted to rectangular pseudo-masks, not pixel-accurate contours; scores measure overlap with these pseudo-masks.
 
-5. **Reusable `polypseg` Python Package** (code moved out of the notebook):
-   - `models.py`: Basic U-Net, Attention U-Net, U-Net++, DeepLabV3+ (same architectures as the notebook).
-   - `data.py`: SUN and LDPolypVideo loaders (bounding box -> pseudo-mask) plus an in-memory dataset.
-   - `metrics.py`: accuracy, Dice, IoU.
+### 3. Image and video inference
+- Image demo loads a saved checkpoint and displays predicted probabilities, masks, overlays, bounding boxes, and confidence. When labels are available, it reports Dice and IoU.
+- Video Analysis accepts MP4, MOV, AVI, and MKV uploads. It processes frames, creates connected-component detections and bounding boxes, then plays an annotated video with a per-frame CSV log, timeline, and keyframes.
+- Video processing completes before playback starts; the current app is not live-streaming inference. Threshold, minimum region size, frame stride, and frame limit can be adjusted.
+- The video pipeline is also available from `python -m polypseg.video`.
 
-6. **Interactive Analytics Dashboard** (Idea 1, `streamlit run app.py`):
-   - Overview, Model Comparison (bars, radar, head-to-head, parallel coordinates), Dataset Analysis,
-     Rankings, Experiment Results (search, sort, CSV download), Presentation Mode, About.
-   - Sidebar filters by dataset/model and an "Include pipeline runs" toggle to merge newly trained results.
-   - Live Demo now runs real trained checkpoints: probability map, mask, overlay, bounding boxes,
-     confidence, Dice/IoU against ground truth for synthetic samples, PNG downloads.
+### 4. Analytics dashboard
+- Streamlit pages provide overview, model comparisons, dataset analysis, rankings, experiment results, and presentation mode.
+- Pipeline results can be included alongside the original notebook results; CSV export and interactive charts are available.
 
-7. **Explainable AI** (Idea 2, page "Explainable AI"):
-   - Grad-CAM adapted to segmentation (target = logits inside the predicted region), selectable target layer.
-   - Occlusion sensitivity as a second, model-agnostic explanation, with Grad-CAM/occlusion agreement score.
-   - "Focus" metric (share of Grad-CAM energy inside the prediction / ground truth) and region importance chart.
-   - Side-by-side Grad-CAM comparison across all trained models.
+### 5. Explainability
+- Segmentation-oriented Grad-CAM with selectable feature layer.
+- Occlusion sensitivity provides a second explanation method; the dashboard compares maps and reports focus/agreement summaries.
 
-8. **Video Polyp Detection** (Idea 3, page "Video Analysis" + `python -m polypseg.video`):
-   - Frame-by-frame segmentation with OpenCV, connected components -> bounding boxes with confidence.
-   - Annotated H.264 video saved and playable in the browser, per-frame CSV log, detection timeline, keyframes.
-   - "Run every N frames" option; ~190 fps on Apple M3 Pro at 256x256 with Basic U-Net (base 32).
+### 6. Synthetic data and GAN
+- Procedural colonoscopy-like images with masks, boxes, and difficulty settings; generated data can be exported in the loader's dataset format.
+- DCGAN training supports generated data or image folders and displays samples and training curves.
+- Synthetic samples can be mixed into a segmentation training run.
 
-9. **Synthetic Dataset Generation** (Idea 4, page "Synthetic Data"):
-   - Procedural generator of colonoscopy-like frames with exact masks, boxes and a difficulty control.
-   - Export in LDPolypVideo folder format (readable by the real loader) or as a ZIP.
-   - DCGAN (64x64) trainable on procedural images or on any real image folder, with loss curves and samples.
-   - "Baseline vs + synthetic data" experiment mode in the training pipeline (`--mix-synthetic N`).
+### 7. Annotation and benchmarking
+- Annotation tool supports projects, multiple annotators, bounding-box labels, model-assisted suggestions, inter-annotator IoU, disagreement alerts, consensus labels, and dataset-format export.
+- Leaderboard accepts validated result CSVs or checkpoints and scores submissions on a fixed synthetic benchmark. Checkpoints load with safe weight-only deserialization.
 
-10. **Automated Model Training Pipeline** (Idea 5, page "Train Model" + `python -m polypseg.train`):
-    - One command / one button trains any set of models on synthetic data, a SUN folder or an LDPolypVideo folder.
-    - Live training curves, TensorBoard logging (`tensorboard --logdir runs`), checkpoints with metadata,
-      results appended to `outputs/pipeline_results.csv` in the same format as the notebook CSV.
-    - Checkpoint browser with training curves and an experiment comparison view (deltas vs baseline).
+### 8. Knowledge graph
+- Interactive graph connects datasets, models, components, experiments, and metrics; includes relationship queries and Cypher export for Neo4j.
 
-11. **Crowdsourced Annotation Tool** (Idea 7, page "Annotation Tool"):
-    - Projects, multiple named annotators, bounding-box labelling with live preview.
-    - Model-assisted box suggestions from a trained checkpoint.
-    - Inter-annotator agreement (pairwise IoU), low-agreement warnings, majority-vote consensus.
-    - Export consensus labels in LDPolypVideo format so they can be trained on directly.
+### 9. RAG AI Assistant
+- Builds a local retrieval index from project documentation, this file, results tables, model/dataset/metric descriptions, and checkpoint metadata.
+- Uses TF-IDF retrieval and presents the retrieved sources with answers. Retrieval-only mode works without an API key.
+- Optional answer generation supports Groq, Google Gemini, OpenRouter, or local Ollama. Provider credentials are configured in `.env` or the assistant settings; without a configured provider it remains retrieval-only.
 
-12. **Knowledge Graph** (Idea 8, page "Knowledge Graph"):
-    - networkx graph linking models, architectural components, datasets, experiments and metrics (+ BEST_ON edges).
-    - Interactive visualisation, node relations, path finder, "models sharing a component" query.
-    - One-click Cypher export to load the same graph into Neo4j.
+## Pending / limits
 
-13. **Open-Source Benchmarking Framework** (Idea 9, page "Leaderboard"):
-    - Leaderboard combining notebook results and submissions, per-dataset ranking and overall score.
-    - Submit a results CSV (validated) or a trained checkpoint, which is scored on the fixed
-      "Synthetic-Bench v1" set so every model sees identical data.
-    - Uploaded checkpoints are loaded with `weights_only=True` (no arbitrary code execution).
+### Setup required for the full RAG assistant
+- **LLM-generated answers:** `.env` is currently absent. Copy `.env.example` to `.env` and set one of `GROQ_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY`, or install/run Ollama with the configured model. A key is optional for retrieval-only answers. A key entered in the UI is held only for that Streamlit session.
+- **Database:** no database is required by the local prototype. RAG uses an in-memory TF-IDF index; results and leaderboard use CSV; annotations use local JSONL and image files; checkpoints are `.pt` files. The knowledge graph runs in NetworkX and exports Cypher, but does not connect to Neo4j. For shared multi-user/deployed use, add persistent storage, authentication, shared files, and optionally a vector database / Neo4j connection.
 
-14. **Curriculum Learning** (Idea 10, `--curriculum` / `--compare-curriculum` or the Train Model page):
-    - Difficulty score per sample from polyp size and polyp/background contrast (no extra labels needed).
-    - Easy-to-hard pacing (starts at 30% of the data, full data after 60% of the epochs).
-    - Synthetic result (600 images, 8 epochs, base 32): Basic U-Net Dice 0.9630 -> 0.9716,
-      DeepLabV3+ Dice 0.9100 -> 0.9795 with curriculum. Needs confirmation on the real datasets.
+### Remaining module work
+1. **RAG and Knowledge Graph:** add Polyp-PVT to the static architecture descriptions/graph components and include full Test evaluation files directly in the retrieval corpus. README and this file currently provide the latest headline result.
+2. **Annotation and Leaderboard:** storage is local to this machine, without account authentication or synchronization. A shared database/API is needed only for real multi-user collaboration or a public leaderboard.
+3. **GAN and synthetic augmentation:** GAN training code exists, but no trained real-image GAN checkpoint is present. GAN images have no masks, so they cannot directly train segmentation without labels, a conditional generator, or pseudo-labeling. Expand controlled real-data augmentation comparisons if that experiment is required.
+4. **Video model quality:** best full-Test Dice is 0.5001, below 0.85. Evaluate future changes on a new untouched test set; measure external-video performance separately. Current labels are rectangular bounding-box pseudo-masks.
+5. **Severity scoring:** requires severity or histology labels, which the current datasets do not provide.
+6. **Portability:** the selected Polyp-PVT checkpoint is tracked with Git LFS; install Git LFS and run `git lfs pull` after cloning. `LD Polyp/` and other checkpoints remain local-only. The dataset is needed for training/evaluation, not inference.
 
-15. **RAG Chatbot** (Idea 11, page "AI Assistant"):
-    - Knowledge base auto-built from results CSVs, computed rankings/averages, training-stability notes,
-      model/dataset/metric descriptions, README, this file and checkpoint metadata.
-    - TF-IDF retrieval (scikit-learn) with cited sources; works offline in retrieval-only mode.
-    - Generation through free LLM APIs: Groq (`openai/gpt-oss-20b`), Google Gemini (`gemini-flash-latest`),
-      OpenRouter (`openrouter/free`) or local Ollama. Keys via `.env` or the settings panel.
+## Run locally
+```bash
+streamlit run app.py
+```
+Open **Video Analysis** to upload a video and view detections. The default checkpoint is:
+`checkpoints/polyp-pvt__ldpolypvideo__polyp-pvt-video-epoch1.pt`.
 
-### Still requires the real datasets / labels
-- Re-run the pipeline on SUN and LDPolypVideo to produce real checkpoints (all current checkpoints are
-  trained on synthetic data and are only for demonstrating the tools).
-- Real-data curriculum and synthetic-augmentation comparisons.
-- GAN training on real colonoscopy frames.
-- Idea 6 (Polyp Severity Scoring) is not built: SUN and LDPolypVideo only provide bounding boxes,
-  so a dataset with histology / severity labels is needed first.
-
----
-
-## Project Ideas for Major Project 1
-
-1. Interactive Model Evaluation and Comparison Dashboard
-   - Build a web-based dashboard using Streamlit or Dash.
-   - Allow users to upload datasets, train models, and compare results interactively.
-   - Include real-time visualizations for metrics like Dice, IoU, accuracy, and loss.
-
-2. Explainable AI (XAI) for Predictions
-   - Integrate Grad-CAM or SHAP to explain model predictions.
-   - Provide heatmaps and feature importance for each prediction.
-   - Add an interface to upload images and view explainable results.
-
-3. Real-Time Video Polyp Detection
-   - Extend the project to process colonoscopy videos in real-time.
-   - Use OpenCV to process video frames and overlay bounding boxes for detected polyps.
-   - Save annotated videos for further analysis.
-
-4. Synthetic Dataset Generation
-   - Use GANs or Diffusion Models to generate synthetic polyp images.
-   - Add functionality to visualize and use synthetic datasets for training.
-   - Compare model performance with and without synthetic data.
-
-5. Automated Model Training Pipeline
-   - Automate dataset preprocessing, model training, and evaluation.
-   - Use MLflow or TensorBoard to log experiments and metrics.
-   - Add a "Train Model" button in the dashboard to trigger the pipeline.
-
-6. Polyp Severity Scoring System
-   - Extend the model to classify polyps based on severity (e.g., benign, pre-cancerous, cancerous).
-   - Provide severity scores along with predictions.
-   - Add a feature to upload images/videos and get severity insights.
-
-7. Crowdsourced Dataset Annotation Tool
-   - Build a tool for collaborative annotation of polyp datasets.
-   - Use Label Studio or create a custom annotation interface.
-   - Allow users to upload unlabeled datasets and annotate them.
-
-8. Knowledge Graph for Dataset and Model Insights
-   - Build a knowledge graph to link datasets, models, metrics, and results.
-   - Use Neo4j to create the graph database.
-   - Visualize relationships in the dashboard to explore insights.
-
-9. Open-Source Benchmarking Framework
-   - Create a standardized framework for benchmarking polyp detection models.
-   - Allow users to submit their own models and compare them against existing ones.
-   - Display a leaderboard of model performance.
-
-10. Curriculum Learning for Polyp Detection
-    - Implement curriculum learning to train models by gradually increasing data complexity.
-    - Start with easy samples and progressively introduce harder ones.
-    - Compare model performance with and without curriculum learning.
-
-11. RAG Chatbot for Dataset and Model Insights
-    - Build a chatbot that uses Retrieval-Augmented Generation (RAG) to answer questions.
-    - Allow users to query dataset statistics, model performance, and explainable predictions.
-    - Use FAISS or Haystack for retrieval and Hugging Face Transformers for generation.
-    - Integrate the chatbot into the dashboard or deploy it as a standalone app.
+See [README.md](README.md) for dataset layout, setup, training, and evaluation commands.

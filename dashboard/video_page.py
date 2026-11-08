@@ -1,11 +1,12 @@
 """Video polyp detection page."""
 
+import hashlib
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from polypseg import config as C
-from polypseg.inference import heuristic_prob, predict_prob
+from polypseg.inference import heuristic_prob, predict_clip_prob, predict_prob
 from polypseg.synthetic import write_video
 from polypseg.video import process_video, save_records
 
@@ -14,29 +15,44 @@ from .common import checkpoint_picker, save_upload
 
 def render(ctx):
     st.subheader("Video Polyp Detection")
-    st.caption("Each frame is segmented. Connected regions become bounding boxes, and an annotated "
-               "video plus a per-frame log are produced.")
+    st.caption("The selected checkpoint segments each frame. Connected polyp regions become boxes in "
+               "an annotated video that plays after processing, with a per-frame detection log.")
 
     left, right = st.columns([1, 2.2])
     with left:
-        model, meta = checkpoint_picker("vid_ck")
-        threshold = st.slider("Threshold", 0.05, 0.95, 0.5, 0.05, key="vid_thr")
+        # Start with the best fully evaluated video checkpoint; users can still
+        # switch to any other saved model from the selector.
+        model, meta = checkpoint_picker("vid_ck", preferred_variant="polyp-pvt-video-epoch1")
+        calibrated = float((meta or {}).get("video_threshold", 0.5))
+        threshold_key = f"vid_thr_{(meta or {}).get('created', 'heuristic')}"
+        threshold = st.slider("Threshold", 0.05, 0.95, min(0.95, max(0.05, calibrated)), 0.05,
+                              key=threshold_key)
         min_area = st.number_input("Min. region area (px)", 0, 20_000, 80, 10, key="vid_area")
         every_n = st.number_input("Run model every N frames", 1, 30, 1, key="vid_n",
                                   help="Higher = faster; boxes are held between model runs.")
         max_frames = st.number_input("Max frames (0 = all)", 0, 100_000, 0, 50, key="vid_max")
         src = st.radio("Video source", ["Upload video", "Synthetic demo clip"], key="vid_src")
         video_path = None
+        video_token = None
         if src == "Upload video":
             up = st.file_uploader("Colonoscopy video", type=["mp4", "avi", "mov", "mkv"], key="vid_up")
             if up is not None:
                 video_path = save_upload(up, "uploads")
+                video_token = (up.name, hashlib.sha256(up.getvalue()).hexdigest())
         else:
             demo = C.OUTPUT_DIR / "demo_synthetic.mp4"
             if not demo.exists() or st.button("Regenerate demo clip"):
                 C.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
                 write_video(demo, n_frames=120)
             video_path = demo
+            if video_path.exists():
+                video_token = (str(video_path), video_path.stat().st_mtime_ns, video_path.stat().st_size)
+        model_token = ((meta or {}).get("model_name"), (meta or {}).get("dataset"),
+                       (meta or {}).get("variant"), (meta or {}).get("created"))
+        run_token = (video_token, model_token, threshold, int(min_area), int(every_n), int(max_frames))
+        if st.session_state.get("vid_run_token") != run_token:
+            st.session_state.pop("vid_result", None)
+            st.session_state.vid_run_token = run_token
         go_btn = st.button("▶ Process video", type="primary", disabled=video_path is None, width="stretch")
 
     with right:
@@ -45,7 +61,11 @@ def render(ctx):
         if video_path is not None and not go_btn and "vid_result" not in st.session_state:
             st.video(str(video_path))
         if go_btn:
-            predictor = (lambda rgb: predict_prob(model, rgb, meta["image_size"])) if model is not None else heuristic_prob
+            if model is not None and meta["model_name"] == "Temporal Attention U-Net":
+                predictor = lambda clip: predict_clip_prob(model, clip, meta["image_size"])
+                predictor.window = int(meta.get("temporal_window", 5))
+            else:
+                predictor = (lambda rgb: predict_prob(model, rgb, meta["image_size"])) if model is not None else heuristic_prob
             out = C.OUTPUT_DIR / f"{video_path.stem}_annotated.mp4"
             bar = st.progress(0.0, text="Processing frames...")
             stats = process_video(video_path, out, predictor, threshold, int(min_area), int(every_n),

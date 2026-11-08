@@ -1,0 +1,1 @@
+checkpoints/polyp-pvt__ldpolypvideo__polyp-pvt-video-epoch1.pt filter=lfs diff=lfs merge=lfs -text

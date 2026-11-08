@@ -12,6 +12,7 @@ video plus a per-frame CSV log are written.
 import argparse
 import csv
 import time
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -52,15 +53,45 @@ def process_video(in_path, out_path, predictor, threshold=0.5, min_area=50, ever
     records, keyframes = [], []
     last_boxes, last_mask = [], np.zeros((h, w), np.uint8)
     idx, t0 = 0, time.time()
+    temporal_window = int(getattr(predictor, "window", 1))
+    temporal_window = temporal_window if temporal_window > 1 and temporal_window % 2 else 1
+    radius = temporal_window // 2
+    buffer = deque()
+    next_frame = 0
+    eof = False
+
+    def fill_until(frame_index):
+        nonlocal next_frame, eof
+        while not eof and next_frame <= frame_index:
+            ok, bgr = cap.read()
+            if not ok or (max_frames and next_frame >= max_frames):
+                eof = True
+                break
+            buffer.append((next_frame, cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
+            next_frame += 1
+
     key_every = max(1, (total or 60) // max(1, keyframe_count))
     try:
         while True:
-            ok, frame_bgr = cap.read()
-            if not ok or (max_frames and idx >= max_frames):
+            fill_until(idx + radius)
+            if not buffer or buffer[0][0] > idx:
                 break
-            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            indexed = dict(buffer)
+            if idx not in indexed:
+                break
+            rgb = indexed[idx]
             if idx % every_n == 0:
-                prob = predictor(rgb)
+                if temporal_window > 1:
+                    clip = []
+                    last_available = buffer[-1][0]
+                    for offset in range(-radius, radius + 1):
+                        wanted = min(max(0, idx + offset), last_available)
+                        if wanted not in indexed:
+                            wanted = min(max(wanted, buffer[0][0]), last_available)
+                        clip.append(indexed[wanted])
+                    prob = predictor(clip)
+                else:
+                    prob = predictor(rgb)
                 last_mask = (prob >= threshold).astype(np.uint8)
                 last_boxes = mask_to_boxes(last_mask, prob, min_area=min_area)
             out = overlay_mask(rgb, last_mask, 0.35) if show_mask else rgb
@@ -80,6 +111,9 @@ def process_video(in_path, out_path, predictor, threshold=0.5, min_area=50, ever
             if idx % key_every == 0 and len(keyframes) < keyframe_count:
                 keyframes.append((idx, out))
             idx += 1
+            discard_before = max(0, idx - radius)
+            while buffer and buffer[0][0] < discard_before:
+                buffer.popleft()
             if progress_callback and total:
                 progress_callback(min(idx / total, 1.0))
     finally:
@@ -115,7 +149,8 @@ def main(argv=None):
     p.add_argument("video", nargs="?", help="input video path")
     p.add_argument("--checkpoint", help="trained checkpoint (.pt). Without it a colour heuristic is used.")
     p.add_argument("--out", help="output video path (default outputs/<name>_annotated.mp4)")
-    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--threshold", type=float, default=None,
+                   help="mask threshold (defaults to checkpoint calibration, or 0.5 without one)")
     p.add_argument("--min-area", type=int, default=50)
     p.add_argument("--every-n", type=int, default=1, help="run the model every N frames")
     p.add_argument("--make-demo", metavar="PATH", help="write a synthetic demo clip and exit")
@@ -131,13 +166,21 @@ def main(argv=None):
 
     if args.checkpoint:
         model, meta = load_checkpoint(args.checkpoint)
-        predictor = lambda rgb: predict_prob(model, rgb, meta["image_size"])  # noqa: E731
+        if meta["model_name"] == "Temporal Attention U-Net":
+            from .inference import predict_clip_prob
+            predictor = lambda clip: predict_clip_prob(model, clip, meta["image_size"])  # noqa: E731
+            predictor.window = int(meta.get("temporal_window", 5))
+        else:
+            predictor = lambda rgb: predict_prob(model, rgb, meta["image_size"])  # noqa: E731
+        threshold = args.threshold if args.threshold is not None else meta.get(
+            "video_threshold", meta.get("threshold", 0.5))
     else:
         print("WARNING: no checkpoint given, using untrained colour heuristic.")
         predictor = heuristic_prob
+        threshold = args.threshold if args.threshold is not None else 0.5
 
     out = Path(args.out) if args.out else C.OUTPUT_DIR / f"{Path(args.video).stem}_annotated.mp4"
-    stats = process_video(args.video, out, predictor, args.threshold, args.min_area, args.every_n)
+    stats = process_video(args.video, out, predictor, threshold, args.min_area, args.every_n)
     log = save_records(stats["records"], out.with_suffix(".csv"))
     print(f"{stats['frames']} frames | polyp in {stats['frames_with_polyp']} | "
           f"{stats['processing_fps']:.1f} fps | codec {stats['codec']}")

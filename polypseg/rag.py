@@ -94,6 +94,11 @@ MODEL_DOCS = {
     "DeepLabV3+": "DeepLabV3+ uses an encoder, an Atrous Spatial Pyramid Pooling (ASPP) module with "
                   "dilation rates 2, 4 and 6 to capture multi-scale context, and a decoder that fuses "
                   "low-level features for sharper boundaries.",
+    "Hybrid Polyp U-Net": "Hybrid Polyp U-Net combines residual convolution blocks, an ASPP multi-scale "
+                          "context bottleneck, and attention-gated U-Net skip connections. It has no "
+                          "pretrained encoder and must be benchmarked locally.",
+    "Pretrained ResNet18 U-Net": "Pretrained ResNet18 U-Net uses an ImageNet-pretrained ResNet-18 encoder "
+                                "with a U-Net decoder. During fine-tuning, its encoder uses a lower learning rate.",
 }
 DATASET_DOCS = {
     "SUN Database": "SUN Database (SUN Colonoscopy Video Database) provides colonoscopy video frames with "
